@@ -283,8 +283,15 @@ curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/ins
 ### 11.3 安装
 
 ```bash
+# 1) 把 wg-easy 面板导出的配置传到网关（换成你的网关地址）
+scp 1.conf root@192.168.1.10:/opt/wireguard/1.conf
+
+# 2) 进目录，先空跑（只打印，不改任何文件）
 cd /opt/wireguard
-curl -fsSL <url> | sudo bash -s -- --alias=10.10.1.0/24
+curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --dry-run
+
+# 3) 正式安装（站点 A 用 10.10.1.0/24，站点 B 用 10.10.2.0/24，依此类推）
+curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24
 ```
 
 脚本自动完成：
@@ -292,7 +299,7 @@ curl -fsSL <url> | sudo bash -s -- --alias=10.10.1.0/24
 - 探测真实 LAN 与网卡名
 - 校验别名（规范网络地址 / 掩码一致 / 不与保留网段重叠 / `xt_NETMAP` 可用）
 - 注入 2 条 NETMAP + 1 条入方向源改写 + FORWARD + MSS clamp
-- `AllowedIPs` 自动补 `172.16.0.0/12`（Docker/NPM 回程必需）
+- `AllowedIPs` 自动补 `172.16.0.0/12`（仅在"VPS 上的容器以 Docker 源地址直连站点内网且服务端未做 SNAT"时需要；若按 §11.7 做了服务端 SNAT，可手工删掉这一条，避免与网关本地 `docker0` 的 `172.17.0.0/16` 抢路由）
 - 打印面板与主路由需要配套填写的内容
 
 再次执行即切换模式（普通 ↔ 影子），旧的注入规则会被自动清除，不会叠加。

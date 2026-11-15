@@ -92,9 +92,9 @@ curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/ins
 
 - 出现 `# site-gw:nm-out`、`# site-gw:nm-in`、`# site-gw:snat-lan` 三条规则
 - **没有** `# site-gw:masq`（普通模式的那条，必须被移除）
-- `AllowedIPs` 里包含 `172.16.0.0/12`
 - `MTU = 1380`
 - 无 `DNS =` 行
+- `AllowedIPs` 里**是否**有 `172.16.0.0/12` 看你的回程方案：走服务端 SNAT（见 §5.1）就删掉它；不做 SNAT 则保留
 
 安装完成后脚本会打印「影子段模式：还需要你在面板/路由上做这些」，照它做即可。
 
@@ -154,6 +154,116 @@ curl -sI --max-time 5 http://10.10.1.208:5000
 docker exec npm sh -c "curl -sI --max-time 5 http://10.10.1.208:5000 | head -1"
 ```
 
+### 5.1 前置：让 VPS 能路由到别名段
+
+```bash
+# 在 VPS 宿主机上执行
+ip route get 10.10.1.208
+```
+
+| 输出 | 含义 | 处理 |
+|---|---|---|
+| `10.10.1.208 dev wg0` | ✅ 已通 | 直接进 §5.2 |
+| `10.10.1.208 via ... dev eth0`（走默认路由） | ❌ 宿主机没有别名路由 | 见下方两条路 |
+
+确认别名路由到底在哪一层：
+
+```bash
+# wg-easy 容器内（bridge 模式时路由在这里）
+docker exec wg-easy ip route | grep 10.10
+
+# NPM 容器内
+docker exec npm ip route get 10.10.1.208
+```
+
+**路径 A：wg-easy 改成 host 网络**（一次性重构，之后 NPM 可直接填别名地址）
+
+```bash
+cd /opt/wg-easy
+
+# 备份现有 compose
+cp docker-compose.yml docker-compose.yml.bak
+
+# 编辑：wg-easy 服务改成 host 网络，删掉 ports / networks / sysctls
+nano docker-compose.yml
+
+# 宿主机 sysctl（host 模式下 compose 里的 sysctls 失效）
+sudo tee /etc/sysctl.d/99-wg-host.conf >/dev/null <<'EOF'
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.src_valid_mark=1
+net.ipv6.conf.all.disable_ipv6=0
+net.ipv6.conf.all.forwarding=1
+net.ipv6.conf.default.forwarding=1
+EOF
+sudo sysctl --system
+
+# 放行 Docker 的 FORWARD（默认策略是 DROP，不放行会静默丢包）
+sudo iptables -I DOCKER-USER -o wg0 -j ACCEPT
+sudo iptables -I DOCKER-USER -i wg0 -j ACCEPT
+
+# 重建容器
+docker compose down && docker compose up -d
+
+# 验证
+ip route get 10.10.1.208
+```
+
+**路径 B：wg-easy 里做 DNAT**（零停机，按服务逐条添加）
+
+```bash
+# 把 "NPM 访问 wg-easy:18080" 转发到 "站点1 的 192.168.1.50:5000"
+docker exec wg-easy iptables -t nat -A PREROUTING -i eth1 -p tcp --dport 18080 \
+  -j DNAT --to-destination 192.168.1.50:5000
+
+# 验证
+docker exec npm sh -c "curl -sI --max-time 5 http://wg-easy:18080 | head -1"
+```
+
+> 路径 B 下 NPM 的 Forward Hostname 填 `wg-easy`、Port 填 `18080`（不是别名地址）。
+
+### 5.2 回程：必须把容器源地址改写成隧道地址
+
+NPM 容器发起请求时源地址是 `172.x`（Docker 网段），站点网关不认识这个地址，回包会走公网丢掉。
+
+```bash
+# ① 先临时验证（容器内加，重启失效）
+docker exec wg-easy iptables -t nat -A POSTROUTING -o wg0 -s 172.16.0.0/12 \
+  -j SNAT --to-source 10.8.0.1
+
+# ② 看规则在不在
+docker exec wg-easy iptables -t nat -S POSTROUTING | grep SNAT
+
+# ③ 触发一次请求后看计数
+docker exec npm sh -c "curl -sI --max-time 5 http://10.10.1.208:5000 | head -1"
+docker exec wg-easy iptables -t nat -L POSTROUTING -n -v | grep 10.8.0.1
+
+# ④ 站点侧确认源地址已变成 10.8.0.1（在站点网关上执行）
+tcpdump -ni wg0 host 192.168.1.50 -c 5
+```
+
+确认有效后写进面板固化（**管理面板 → 钩子脚本**）：
+
+启动后脚本（PostUp）：
+
+```bash
+iptables -t nat -A POSTROUTING -o {{interface}} -s 172.16.0.0/12 -j SNAT --to-source 10.8.0.1
+```
+
+停止前脚本（PostDown）：
+
+```bash
+iptables -t nat -D POSTROUTING -o {{interface}} -s 172.16.0.0/12 -j SNAT --to-source 10.8.0.1
+```
+
+撤掉临时规则：
+
+```bash
+docker exec wg-easy iptables -t nat -D POSTROUTING -o wg0 -s 172.16.0.0/12 \
+  -j SNAT --to-source 10.8.0.1
+```
+
+> 做了这一步之后，**站点网关的 `AllowedIPs` 里就不需要 `172.16.0.0/12`** —— 网关自己也跑 Docker 时，那条 `/12` 会被本地 `docker0` 的 `172.17.0.0/16` 抢走，反而制造"请求发得出、回包收不到"。
+
 ---
 
 ## 6. 站点互访（可选）
@@ -187,6 +297,13 @@ docker exec npm sh -c "curl -sI --max-time 5 http://10.10.1.208:5000 | head -1"
 4. 新站点部署：`--alias=10.10.4.0/24`
 5. 需要互访的站点，主路由追加 `10.10.4.0/24 → 网关 LAN IP`
 
+新增站点的完整命令（网关 `192.168.1.10`、别名 `10.10.4.0/24`）：
+
+```bash
+scp 1.conf root@192.168.1.10:/opt/wireguard/1.conf
+ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.4.0/24'
+```
+
 ---
 
 ## 8. 切换与回退
@@ -195,7 +312,7 @@ docker exec npm sh -c "curl -sI --max-time 5 http://10.10.1.208:5000 | head -1"
 |---|---|
 | 影子模式 → 普通模式（站点 LAN 已唯一化后） | 重跑同一脚本，**不带** `--alias`（旧规则自动清除） |
 | 修改别名段 | 直接带新的 `--alias=...` 重跑（会重建规则），并同步面板字段与台账 |
-| 完全卸载 | `curl -fsSL <url> \| sudo bash -s -- --rollback` |
+| 完全卸载 | `curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh \| sudo bash -s -- --rollback` |
 | 只停隧道不停 Docker | `systemctl stop wg-quick@wg0` |
 
 > 切换模式后务必回面板核对「服务端允许的IP」：普通模式填真实 LAN，影子模式填别名段。
@@ -208,9 +325,10 @@ docker exec npm sh -c "curl -sI --max-time 5 http://10.10.1.208:5000 | head -1"
 |---|---|---|
 | `NETMAP: No such file or directory` / target 不可用 | 内核缺 `xt_NETMAP` | `modprobe xt_NETMAP`；OpenWrt 装 `iptables-mod-nat-extra` |
 | 站内设备完全 ping 不通别名 | 网关 PREROUTING NETMAP 未命中 | 检查 `iptables -t nat -S PREROUTING \| grep NETMAP` 的网段与 `-i wg0` |
-| 请求发出、无回包 | `AllowedIPs` 缺 `172.16.0.0/12` | 重跑脚本（自动补），或手工在面板加 |
+| 请求发出、无回包（源是 `172.x`） | 网关不认识 `172.16.0.0/12` 的源地址 | 服务端做 SNAT（§5.2 的 `SNAT --to-source 10.8.0.1`），不要给网关加 `172.16.0.0/12`（会与本地 `docker0` 抢路由） |
+| 请求发出、无回包（源是 `10.8.x`） | 网关 `AllowedIPs` 缺 `10.8.0.0/24` | 面板补 `10.8.0.0/24` 并重新导出配置 |
 | 站内设备回包走公网 | 网关 `snat-lan` 未生效 | 检查 `-o <LAN网卡>` 名字；重跑并加 `--lan=` |
-| 客户端能通、站点设备也能通，但 NPM 502 | NPM 容器没有 `10.10.x` 路由 | 参考 README 关于 wg-easy host 网络 / DNAT 的章节 |
+| 客户端能通、站点设备也能通，但 NPM 502 | NPM 容器没有 `10.10.x` 路由 | 见 §5.1（host 网络或 DNAT） |
 | 跨站互访不通 | 主路由缺对端别名段路由 | 加静态路由或 DHCP 121 |
 | 大文件传输卡死 | MTU/MSS | 确认 `MTU = 1380` 与 `site-gw:mss` 规则存在 |
 | 反复重启后隧道掉线 | 缺 `network-online.target` 依赖 | 重跑脚本（自动补 drop-in） |
@@ -253,4 +371,113 @@ docker exec npm sh -c "curl -sI --max-time 5 http://10.10.1.208:5000 | head -1"
 站点编号,站点名称,真实LAN,别名,网关LAN_IP,隧道地址,主路由,备注
 1,家里,192.168.1.0/24,10.10.1.0/24,192.168.1.10,10.8.0.10,小米AX3000,DHCP-121
 2,门店,192.168.1.0/24,10.10.2.0/24,192.168.1.10,10.8.0.20,OpenWrt,
+```
+
+---
+
+## 12. 完整命令速查（复制即用）
+
+下面所有命令里的地址都写死了，**换成你自己的值后可直接粘贴**。
+脚本地址固定为：
+
+```
+https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh
+```
+
+### 12.1 站点 1 网关（真实 `192.168.1.0/24`，别名 `10.10.1.0/24`）
+
+```bash
+# 上传配置
+scp 1.conf root@192.168.1.10:/opt/wireguard/1.conf
+
+# 空跑
+ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --dry-run'
+
+# 正式安装
+ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24'
+```
+
+在网关本机上直接执行（已在 `/opt/wireguard` 目录）：
+
+```bash
+cd /opt/wireguard
+curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --dry-run
+curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24
+```
+
+### 12.2 站点 2 网关（别名 `10.10.2.0/24`）
+
+```bash
+scp 1.conf root@192.168.2.10:/opt/wireguard/1.conf
+ssh root@192.168.2.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.2.0/24'
+```
+
+### 12.3 站点 3 网关（别名 `10.10.3.0/24`）
+
+```bash
+scp 1.conf root@192.168.3.10:/opt/wireguard/1.conf
+ssh root@192.168.3.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.3.0/24'
+```
+
+### 12.4 网关侧验证（在网关本机）
+
+```bash
+systemctl is-active wg-quick@wg0
+wg show wg0
+iptables -t nat -S | grep -E 'NETMAP|snat-lan'
+ip route get 10.8.0.1
+conntrack -L | grep 10.10.1
+tcpdump -ni wg0 host 192.168.1.208 -c 5
+```
+
+### 12.5 服务端验证（在 VPS）
+
+```bash
+docker exec wg-easy wg show
+docker exec wg-easy ip route | grep 10.10
+docker exec npm ip route get 10.10.1.208
+docker exec npm sh -c "curl -sI --max-time 5 http://10.10.1.208:5000 | head -1"
+```
+
+### 12.6 服务端回程 SNAT（VPS，先临时验证）
+
+```bash
+docker exec wg-easy iptables -t nat -A POSTROUTING -o wg0 -s 172.16.0.0/12 -j SNAT --to-source 10.8.0.1
+docker exec wg-easy iptables -t nat -S POSTROUTING | grep SNAT
+docker exec wg-easy iptables -t nat -L POSTROUTING -n -v | grep 10.8.0.1
+```
+
+撤销：
+
+```bash
+docker exec wg-easy iptables -t nat -D POSTROUTING -o wg0 -s 172.16.0.0/12 -j SNAT --to-source 10.8.0.1
+```
+
+### 12.7 客户端侧验证（Windows）
+
+```powershell
+wg show
+route print | findstr 10.10
+ping 10.10.1.208
+curl.exe -I --max-time 5 http://10.10.1.208:5000
+```
+
+### 12.8 切换回普通模式（站点 LAN 已唯一化后）
+
+```bash
+cd /opt/wireguard
+curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash
+```
+
+### 12.9 完全卸载
+
+```bash
+cd /opt/wireguard
+curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --rollback
+```
+
+### 12.10 指定 LAN 网段 / MTU（多网卡探测不准时）
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --lan=192.168.1.0/24 --mtu=1380
 ```

@@ -42,7 +42,7 @@ usage() {
 site-gw 零参数安装：
   curl -fsSL https://raw.githubusercontent.com/thatinjury2011/wg-easy/master/site-gw/install.sh | sudo bash
 影子段模式（多个站点 LAN 网段重名时）：
-  curl -fsSL <url> | sudo bash -s -- --alias=10.10.1.0/24
+  curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24
 配置文件查找顺序：当前目录唯一的 *.conf → ./1.conf → ./wg0.conf → /opt/wireguard/1.conf → /opt/wireguard/*.conf（唯一时）
 可选：--alias=<CIDR> | --dry-run | --rollback | --conf=<路径> | --lan=192.168.31.0/24 | --mtu=1380 | --force
 HELP
