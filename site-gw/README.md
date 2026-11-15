@@ -335,10 +335,38 @@ curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.
 | 位置 | 填什么 |
 |---|---|
 | wg-easy 面板 → **服务端允许的IP** | `10.8.0.10/32, 10.10.1.0/24`（填别名，**不是** `192.168.1.0/24`） |
+| **wg-easy 面板 → 钩子脚本 → PostUp** | `ip route replace 10.10.0.0/16 dev {{interface}}` ← **必须加**，见下方说明 |
 | wg-easy 面板 → 允许的IP | `10.42.42.0/24, 10.8.0.0/24, 172.16.0.0/12, <对端站点别名>` |
 | 客户端钩子脚本 | **留空**（规则由 `--alias` 注入） |
 | NPM → Forward Hostname | 别名地址，如 `10.10.1.208` |
 | 主路由 | **仅在站内设备需要主动访问别站时**才加：`10.10.<别站号>.0/24 → 本站网关 LAN IP` |
+
+> ### ⚠️ 服务端必须手工加路由（最容易漏的一步）
+>
+> **wg-easy 只把网段写进 peer 的 `allowed-ips`，不会往容器路由表里加 `ip route`。**
+> `allowed-ips` 是"加密路由表"，内核转发还要看系统路由表 —— 少了这条，表现为：
+>
+> - Windows 端：握手正常、`transfer` 里 **sent 远大于 received**、`ping` 超时
+> - VPS 端：`docker exec wg-easy ip route | grep 10.10` **没有任何输出**
+>
+> 修复（先临时验证）：
+>
+> ```bash
+> docker exec wg-easy ip route add 10.10.1.0/24 dev wg0
+> docker exec wg-easy ip route | grep 10.10    # 应出现 10.10.1.0/24 dev wg0
+> ```
+>
+> 固化（**管理面板 → 钩子脚本**，`/16` 一条覆盖所有站点，以后加站点不用再改）：
+>
+> ```bash
+> # 启动后脚本 PostUp
+> ip route replace 10.10.0.0/16 dev {{interface}}
+>
+> # 停止前脚本 PostDown
+> ip route del 10.10.0.0/16 dev {{interface}} || true
+> ```
+>
+> 容器里 `wg0` 自带 `10.8.0.1/24`，所以 `10.8.0.0/24` 是直连路由，无需额外加；**只有"服务端允许的IP"里额外填的网段才需要手工加路由**。
 
 > **纯"外 → 内"访问（NPM 反代、手机直连）时，主路由一条路由都不用加**：网关把源地址改写成自己的 LAN IP，站内设备回包是同网段直连，不经过主路由。
 

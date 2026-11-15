@@ -61,6 +61,26 @@
 | IPv6 | 留空 | 影子段仅 IPv4 |
 | 允许的IP | `10.42.42.0/24, 10.8.0.0/24, 172.16.0.0/12, 10.10.2.0/24, 10.10.3.0/24` | **对端站点的别名段**，不要写对端真实 LAN |
 | **服务端允许的IP** | `10.8.0.10/32, 10.10.1.0/24` | **本站别名段**，不能写真实 LAN |
+
+保存后 **还必须再做一步**（否则访问端永远 ping 不通别名）——在 wg-easy 的
+**管理面板 → 钩子脚本 → 启动后脚本(PostUp)** 里加：
+
+```bash
+ip route replace 10.10.0.0/16 dev {{interface}}
+```
+
+停止前脚本(PostDown)：
+
+```bash
+ip route del 10.10.0.0/16 dev {{interface}} || true
+```
+
+> **为什么必须手工加**：wg-easy 只把网段写进 peer 的 `allowed-ips`（加密路由表），
+> **不会**往容器系统路由表里加 `ip route`。少了这条，现象是：
+> Windows 握手正常、`transfer` 里 sent 远大于 received、`ping` 全超时，
+> 而 `docker exec wg-easy ip route | grep 10.10` 没有任何输出。
+> 用 `/16` 一条覆盖所有站点，以后新增站点不用再改钩子。
+> 容器内 `wg0` 自带 `10.8.0.1/24`，所以 `10.8.0.0/24` 无需额外加路由。
 | MTU | 默认 | 脚本会把 1420 降为 1380 |
 | 持久化保活 | `25` | 站点在 NAT 后必须有 |
 | DNS | **留空** | 避免影响站点本地解析 |
@@ -327,6 +347,7 @@ ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://wg.entitycloud.cn
 | 站内设备完全 ping 不通别名 | 网关 PREROUTING NETMAP 未命中 | 检查 `iptables -t nat -S PREROUTING \| grep NETMAP` 的网段与 `-i wg0` |
 | 请求发出、无回包（源是 `172.x`） | 网关不认识 `172.16.0.0/12` 的源地址 | 服务端做 SNAT（§5.2 的 `SNAT --to-source 10.8.0.1`），不要给网关加 `172.16.0.0/12`（会与本地 `docker0` 抢路由） |
 | 请求发出、无回包（源是 `10.8.x`） | 网关 `AllowedIPs` 缺 `10.8.0.0/24` | 面板补 `10.8.0.0/24` 并重新导出配置 |
+| **握手正常、sent≫received、ping 全超时** | **服务端缺别名路由**（wg-easy 不会自动加） | `docker exec wg-easy ip route add 10.10.1.0/24 dev wg0` 验证；固化到面板 PostUp：`ip route replace 10.10.0.0/16 dev {{interface}}` |
 | 站内设备回包走公网 | 网关 `snat-lan` 未生效 | 检查 `-o <LAN网卡>` 名字；重跑并加 `--lan=` |
 | 客户端能通、站点设备也能通，但 NPM 502 | NPM 容器没有 `10.10.x` 路由 | 见 §5.1（host 网络或 DNAT） |
 | 跨站互访不通 | 主路由缺对端别名段路由 | 加静态路由或 DHCP 121 |
