@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 # =============================================================================
-# site-gw —— Armbian 旁路网关一键安装 WireGuard 隧道（零参数）
+# site-gw —— 一键安装 WireGuard 隧道（Debian / Ubuntu / Armbian / AlmaLinux / RHEL / Rocky / Arch / openSUSE）
 #
 #   用法：
 #     cd /opt/wireguard                      # 把 wg-easy 导出的配置 scp 到这个目录
-#     curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash
+#     sudo bash install.sh                   # 或 curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash
 #
 #   脚本做的事：装依赖 → 把配置装成 wg0 常驻隧道 → 开机自启 → 留一份副本供重跑
 #   不触碰：Docker 容器/网络/iptables 链、FORWARD 默认策略、主机路由、nps、npm
 #
-#   可选参数（日常不用）：
+#   可选参数：
 #     --alias=<CIDR>   影子段模式：为本站发一个全局唯一的别名网段（多个站点 LAN 重名时用）
-#                      例：--alias=10.10.1.0/24   （真实 192.168.1.x ↔ 别名 10.10.1.x）
 #     --dry-run        只打印动作，不改任何东西
 #     --rollback       停用并移除本脚本安装的一切
 #     --conf=<路径>    指定配置文件（默认自动查找）
 #     --lan=<CIDR>     本站 LAN 网段（默认自动探测默认路由网卡）
 #     --mtu=<N>        覆盖 MTU（默认：1420 自动降为 1380）
 #     --force          允许 AllowedIPs 含 0.0.0.0/0（全流量走 VPN）
+#     --skip-deps      跳过系统包安装（依赖已就绪 / 离线环境）
 # =============================================================================
 set -euo pipefail
 
@@ -29,9 +29,10 @@ DROPIN_DIR="/etc/systemd/system/wg-quick@${IFACE}.service.d"
 DROPIN_FILE="${DROPIN_DIR}/50-site-gw.conf"
 HASH_FILE="/var/lib/site-gw/config.sha256"
 UNIT="wg-quick@${IFACE}"
+PM_TIMEOUT="${PM_TIMEOUT:-900}"
 
-DRY_RUN=0; FORCE=0; ROLLBACK=0; LAN_CIDR=""; NEW_MTU=""; CONF_ARG=""
-ALIAS_CIDR=""; LAN_IF=""
+DRY_RUN=0; FORCE=0; ROLLBACK=0; SKIP_DEPS=0
+LAN_CIDR=""; NEW_MTU=""; CONF_ARG=""; ALIAS_CIDR=""; LAN_IF=""
 
 log()  { printf '\033[1;32m[site-gw]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[site-gw]\033[0m %s\n' "$*"; }
@@ -44,21 +45,23 @@ site-gw 零参数安装：
 影子段模式（多个站点 LAN 网段重名时）：
   curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.1.0/24
 配置文件查找顺序：当前目录唯一的 *.conf → ./1.conf → ./wg0.conf → /opt/wireguard/1.conf → /opt/wireguard/*.conf（唯一时）
-可选：--alias=<CIDR> | --dry-run | --rollback | --conf=<路径> | --lan=192.168.31.0/24 | --mtu=1380 | --force
+可选：--alias=<CIDR> | --dry-run | --rollback | --conf=<路径> | --lan=192.168.31.0/24 | --mtu=1380 | --force | --skip-deps
+支持：Debian / Ubuntu / Armbian / AlmaLinux / RHEL / Rocky / CentOS Stream / Arch / openSUSE
 HELP
 }
 
 for a in "$@"; do
   case "$a" in
-    --dry-run)  DRY_RUN=1 ;;
-    --force)    FORCE=1 ;;
-    --rollback) ROLLBACK=1 ;;
-    --lan=*)    LAN_CIDR="${a#*=}" ;;
-    --alias=*)  ALIAS_CIDR="${a#*=}" ;;
-    --mtu=*)    NEW_MTU="${a#*=}" ;;
-    --conf=*)   CONF_ARG="${a#*=}" ;;
-    -h|--help)  usage; exit 0 ;;
-    *)          die "未知参数: $a（-h 查看用法）" ;;
+    --dry-run)   DRY_RUN=1 ;;
+    --force)     FORCE=1 ;;
+    --rollback)  ROLLBACK=1 ;;
+    --skip-deps) SKIP_DEPS=1 ;;
+    --lan=*)     LAN_CIDR="${a#*=}" ;;
+    --alias=*)   ALIAS_CIDR="${a#*=}" ;;
+    --mtu=*)     NEW_MTU="${a#*=}" ;;
+    --conf=*)    CONF_ARG="${a#*=}" ;;
+    -h|--help)   usage; exit 0 ;;
+    *)           die "未知参数: $a（-h 查看用法）" ;;
   esac
 done
 
@@ -79,6 +82,74 @@ write_file() {
     chmod "$mode" "$dest"
     printf '  ok 写入 %s\n' "$dest"
   fi
+}
+
+# ---------------------------------------------------------------- 系统识别
+detect_distro() {
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    echo "${PRETTY_NAME:-${NAME:-unknown}}"
+  else
+    echo "$(uname -s) $(uname -r)"
+  fi
+}
+
+detect_pm() {
+  if   command -v apt-get >/dev/null 2>&1; then echo apt
+  elif command -v dnf     >/dev/null 2>&1; then echo dnf
+  elif command -v yum     >/dev/null 2>&1; then echo yum
+  elif command -v pacman  >/dev/null 2>&1; then echo pacman
+  elif command -v zypper  >/dev/null 2>&1; then echo zypper
+  else echo none
+  fi
+}
+
+DISTRO="$(detect_distro)"
+PM="$(detect_pm)"
+
+tmo() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${PM_TIMEOUT}" "$@"
+  else
+    "$@"
+  fi
+}
+
+pkg_install() {
+  if [[ ${DRY_RUN} -eq 1 ]]; then
+    case "${PM}" in
+      apt)
+        printf '  [dry-run] apt-get update -qq\n'
+        printf '  [dry-run] env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends %s\n' "$*"
+        ;;
+      dnf|yum)
+        printf '  [dry-run] %s install -y -q %s\n' "${PM}" "$*"
+        ;;
+      pacman)
+        printf '  [dry-run] pacman -Sy --noconfirm --needed %s\n' "$*"
+        ;;
+      zypper)
+        printf '  [dry-run] zypper --non-interactive install %s\n' "$*"
+        ;;
+      none)
+        printf '  [dry-run] (无包管理器，将报错退出)\n'
+        ;;
+    esac
+    return 0
+  fi
+  case "${PM}" in
+    apt)
+      tmo env DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+        || warn "apt-get update 失败（网络/源不可达），继续尝试从本地缓存安装"
+      tmo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "$@"
+      ;;
+    dnf)    tmo dnf install -y -q "$@" ;;
+    yum)    tmo yum install -y -q "$@" ;;
+    pacman) tmo pacman -Sy --noconfirm --needed "$@" ;;
+    zypper) tmo zypper --non-interactive --quiet install "$@" ;;
+    none)   die "未识别到包管理器（apt/dnf/yum/pacman/zypper 都没有），请先手工安装 wireguard-tools 与 iptables" ;;
+  esac
 }
 
 # ---------------------------------------------------------------- IPv4 工具
@@ -171,6 +242,7 @@ MSG
   fi
 fi
 [[ -f ${SRC_CONF} ]] || die "配置文件不存在：${SRC_CONF}"
+log "系统：${DISTRO}（包管理器：${PM}）"
 log "使用配置文件：$(cd "$(dirname "$SRC_CONF")" && pwd)/$(basename "$SRC_CONF")"
 
 grep -q '^\[Interface\]' "$SRC_CONF" || die "不是有效的 wg-quick 配置（缺少 [Interface]）"
@@ -180,18 +252,46 @@ if grep -qiE '^[[:space:]]*AllowedIPs[[:space:]]*=.*(0\.0\.0\.0/0|::/0)' "$SRC_C
 fi
 command -v docker >/dev/null 2>&1 && log "检测到 Docker（不会触碰容器、网络、Docker 的 iptables 链）"
 
-# ---------------------------------------------------------------- 依赖
-pkgs=()
-command -v wg       >/dev/null 2>&1 || pkgs+=(wireguard-tools)
-command -v iptables >/dev/null 2>&1 || pkgs+=(iptables)
-if ((${#pkgs[@]} > 0)); then
-  log "安装：${pkgs[*]}（不执行 apt upgrade，不动内核）"
-  run apt-get update -qq
-  run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${pkgs[@]}"
+# ---------------------------------------------------------------- 依赖（多发行版）
+if [[ ${SKIP_DEPS} -eq 1 ]]; then
+  log "跳过依赖安装（--skip-deps）"
 else
-  log "wireguard-tools / iptables 已存在，跳过安装"
+  need=()
+  command -v wg       >/dev/null 2>&1 || need+=(wireguard-tools)
+  command -v iptables >/dev/null 2>&1 || need+=(iptables)
+  if ! command -v ip >/dev/null 2>&1; then
+    case "${PM}" in
+      dnf|yum) need+=(iproute) ;;
+      *)       need+=(iproute2) ;;
+    esac
+  fi
+
+  if ((${#need[@]} > 0)); then
+    log "安装依赖：${need[*]}（不执行系统升级，不动内核）"
+    pkg_install "${need[@]}"
+  else
+    log "wireguard-tools / iptables / iproute 已就绪，跳过安装"
+  fi
 fi
-run modprobe wireguard || true
+
+if [[ ${DRY_RUN} -eq 0 ]]; then
+  if ! command -v wg >/dev/null 2>&1; then
+    die "wireguard-tools 未安装成功。Debian/Ubuntu: apt install wireguard-tools；EL: dnf install wireguard-tools（需 appstream 源）"
+  fi
+  if ! command -v iptables >/dev/null 2>&1; then
+    die "iptables 未安装成功。EL 系请执行 dnf install -y iptables"
+  fi
+fi
+
+if [[ ${DRY_RUN} -eq 1 ]]; then
+  printf '  [dry-run] modprobe wireguard\n'
+elif ! modprobe wireguard 2>/dev/null; then
+  warn "内核暂时加载不了 wireguard 模块，继续（wg-quick 启动时会给出具体错误）。"
+  case "${PM}" in
+    dnf|yum) warn "EL 系可尝试：dnf install -y epel-release elrepo-release && dnf install -y kmod-wireguard" ;;
+    apt)     warn "Debian/Ubuntu 可尝试：apt install -y linux-headers-\$(uname -r) 后 reboot" ;;
+  esac
+fi
 
 # ---------------------------------------------------------------- LAN 网段与网卡
 def_if="$(ip -o -4 route show to default 2>/dev/null | awk '{print $5}' | head -n1)"
@@ -206,8 +306,30 @@ if [[ ${DRY_RUN} -eq 0 ]]; then
   ip link show "$LAN_IF" >/dev/null 2>&1 || die "网卡不存在：${LAN_IF}"
 fi
 
+# 归整成网络地址（ip addr 给出的是主机地址/前缀，如 192.168.31.34/24）
+LAN_PLEN="${LAN_CIDR#*/}"
+LAN_INT=$(ip2int "${LAN_CIDR%/*}") || die "本站 LAN 地址无效：${LAN_CIDR}"
+LAN_MASK=$(prefix2mask "$LAN_PLEN") || die "本站 LAN 掩码无效：/${LAN_PLEN}"
+LAN_NET="$(int2ip $(( LAN_INT & LAN_MASK )))/${LAN_PLEN}"
+[[ ${LAN_NET} == "${LAN_CIDR}" ]] || log "LAN 网段归整：${LAN_CIDR} → ${LAN_NET}"
+
+# ---------------------------------------------------------------- 防火墙提示（RHEL 系）
+if systemctl is-active --quiet firewalld 2>/dev/null; then
+  warn "检测到 firewalld 正在运行：它可能拦截 wg0 的转发。"
+  warn "  排查：firewall-cmd --get-active-zones；必要时 firewall-cmd --zone=trusted --add-interface=${IFACE} --permanent && firewall-cmd --reload"
+fi
+if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]]; then
+  warn "SELinux=Enforcing：如出现转发异常，可临时 setenforce 0 验证（长期请配 SELinux 策略）"
+fi
+
 # ---------------------------------------------------------------- 影子段校验
 ALIAS_MODE=0
+NETMAP_IPT=""
+netmap_check() {
+  # $1 = iptables 可执行文件名，支持返回 0 表示 NETMAP 可用
+  "$1" -t nat -j NETMAP -h >/dev/null 2>&1
+}
+
 if [[ -n ${ALIAS_CIDR} ]]; then
   ALIAS_MODE=1
   [[ ${ALIAS_CIDR} == */* ]] || die "--alias 需要带掩码，例如 --alias=10.10.1.0/24"
@@ -218,11 +340,6 @@ if [[ -n ${ALIAS_CIDR} ]]; then
   (( (ALIAS_INT & ALIAS_MASK) == ALIAS_INT )) || die "--alias 不是规范网络地址，应写成 $(int2ip $(( ALIAS_INT & ALIAS_MASK )))/${ALIAS_PLEN}"
   ALIAS_NET="$(int2ip $(( ALIAS_INT & ALIAS_MASK )))/${ALIAS_PLEN}"
 
-  LAN_PLEN="${LAN_CIDR#*/}"
-  LAN_INT=$(ip2int "${LAN_CIDR%/*}") || die "本站 LAN 网段无效：${LAN_CIDR}"
-  LAN_MASK=$(prefix2mask "$LAN_PLEN") || die "本站 LAN 掩码无效：/${LAN_PLEN}"
-  LAN_NET="$(int2ip $(( LAN_INT & LAN_MASK )))/${LAN_PLEN}"
-
   [[ ${ALIAS_PLEN} == "${LAN_PLEN}" ]] || die "影子段掩码必须与真实 LAN 一致（真实 /${LAN_PLEN}，影子 /${ALIAS_PLEN}）"
   [[ ${LAN_NET} != "${ALIAS_NET}" ]] || die "影子段不能与真实 LAN 相同"
 
@@ -231,13 +348,42 @@ if [[ -n ${ALIAS_CIDR} ]]; then
   done
   if overlaps "$ALIAS_NET" "$LAN_NET"; then die "影子段 ${ALIAS_NET} 与真实 LAN ${LAN_NET} 重叠"; fi
 
+  # NETMAP 目标可用性（iptables-nft 与 iptables-legacy 行为不同）
+  if netmap_check iptables; then
+    NETMAP_IPT="iptables"
+  elif command -v iptables-legacy >/dev/null 2>&1 && netmap_check iptables-legacy; then
+    NETMAP_IPT="iptables-legacy"
+    warn "当前 iptables 为 nft 后端且不支持 NETMAP，改用 iptables-legacy"
+  else
+    cat >&2 <<EOF
+[site-gw] 当前系统的 iptables 不支持 NETMAP 目标（常见于 EL9 的 iptables-nft）。
+
+  方案一（推荐）：安装 legacy 版本后重跑
+    Debian/Ubuntu: apt install -y iptables
+    EL8/EL9:       dnf install -y iptables-legacy
+    # 或使用 alternatives 切换：update-alternatives --set iptables /usr/sbin/iptables-legacy
+
+  方案二：用 nftables 实现等价规则（手工执行，注意把 eth0 / 网段换成实际值）
+    nft add table ip sitegw
+    nft 'add chain ip sitegw pre  { type nat hook prerouting  priority dstnat ; }'
+    nft 'add chain ip sitegw post { type nat hook postrouting priority srcnat ; }'
+    nft add rule ip sitegw pre  iifname "${IFACE}" ip daddr ${ALIAS_NET} dnat ip prefix to ${LAN_NET}
+    nft add rule ip sitegw post oifname "${IFACE}" ip saddr ${LAN_NET} snat ip prefix to ${ALIAS_NET}
+    nft add rule ip sitegw post oifname "${LAN_IF}" ip saddr != ${LAN_NET} masquerade
+    # 清理：nft delete table ip sitegw
+
+  方案三：不用影子段，改为给各站点规划唯一 LAN 网段后以普通模式安装。
+EOF
+    die "影子段模式需要 NETMAP 支持，已中止"
+  fi
+
   modprobe xt_NETMAP 2>/dev/null || true
-  log "影子段模式：真实 ${LAN_NET} ↔ 别名 ${ALIAS_NET}（网卡 ${LAN_IF}）"
+  log "影子段模式：真实 ${LAN_NET} ↔ 别名 ${ALIAS_NET}（网卡 ${LAN_IF}，NAT 后端 ${NETMAP_IPT}）"
 fi
 
 # ---------------------------------------------------------------- 渲染配置
-tmp_cfg="$(mktemp)"; tmp_cfg2="$(mktemp)"; tmp_cfg3="$(mktemp)"
-trap 'rm -f "$tmp_cfg" "$tmp_cfg2" "$tmp_cfg3"' EXIT
+tmp_cfg="$(mktemp)"; tmp_cfg2="$(mktemp)"; tmp_cfg3="$(mktemp)"; rules_file="$(mktemp)"
+trap 'rm -f "$tmp_cfg" "$tmp_cfg2" "$tmp_cfg3" "$rules_file"' EXIT
 
 sed 's/\r$//' "$SRC_CONF" > "$tmp_cfg"
 sed -i '/^[[:space:]]*DNS[[:space:]]*=/d' "$tmp_cfg"
@@ -271,50 +417,47 @@ if [[ ${ALIAS_MODE} -eq 1 ]]; then
   mv "$tmp_cfg2" "$tmp_cfg"
 fi
 
-if [[ ${ALIAS_MODE} -eq 1 ]]; then
-  awk -v lan="${LAN_NET}" -v alias="${ALIAS_NET}" -v lanif="${LAN_IF}" '
-    /^\[Peer\]/ && !done {
-      print "";
-      print "# site-gw:rules  由安装脚本生成，请勿手工编辑";
-      print "PostUp   = iptables -t nat -A POSTROUTING -s " lan " -o %i -j NETMAP --to " alias "   # site-gw:nm-out";
-      print "PostUp   = iptables -t nat -A PREROUTING -d " alias " -i %i -j NETMAP --to " lan "   # site-gw:nm-in";
-      print "PostUp   = iptables -t nat -A POSTROUTING -o " lanif " ! -s " lan " -j MASQUERADE   # site-gw:snat-lan";
-      print "PostUp   = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT   # site-gw:fwd";
-      print "PostUp   = iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu   # site-gw:mss";
-      print "PostDown = iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu   # site-gw:mss";
-      print "PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT   # site-gw:fwd";
-      print "PostDown = iptables -t nat -D POSTROUTING -o " lanif " ! -s " lan " -j MASQUERADE   # site-gw:snat-lan";
-      print "PostDown = iptables -t nat -D PREROUTING -d " alias " -i %i -j NETMAP --to " lan "   # site-gw:nm-in";
-      print "PostDown = iptables -t nat -D POSTROUTING -s " lan " -o %i -j NETMAP --to " alias "   # site-gw:nm-out";
-      print "";
-      done=1
-    }
-    { print }
-  ' "$tmp_cfg" > "$tmp_cfg2"
-  mv "$tmp_cfg2" "$tmp_cfg"
-  log "已注入影子段规则（${LAN_NET} ↔ ${ALIAS_NET}，入方向源改写用 ${lanif}）"
-else
-  awk -v lan="${LAN_CIDR}" '
-    /^\[Peer\]/ && !done {
-      print "";
-      print "# site-gw:rules  由安装脚本生成，请勿手工编辑";
-      print "PostUp   = iptables -t nat -A POSTROUTING -s " lan " -o %i -j MASQUERADE   # site-gw:masq";
-      print "PostUp   = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT   # site-gw:fwd";
-      print "PostUp   = iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu   # site-gw:mss";
-      print "PostDown = iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu   # site-gw:mss";
-      print "PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT   # site-gw:fwd";
-      print "PostDown = iptables -t nat -D POSTROUTING -s " lan " -o %i -j MASQUERADE   # site-gw:masq";
-      print "";
-      done=1
-    }
-    { print }
-  ' "$tmp_cfg" > "$tmp_cfg2"
-  mv "$tmp_cfg2" "$tmp_cfg"
-  log "已注入本站 NAT/转发/MSS 规则（${LAN_CIDR}）"
-fi
+# 生成规则行
+{
+  echo ""
+  echo "# site-gw:rules  由安装脚本生成，请勿手工编辑"
+  if [[ ${ALIAS_MODE} -eq 1 ]]; then
+    I="${NETMAP_IPT}"
+    echo "PostUp   = ${I} -t nat -A POSTROUTING -s ${LAN_NET} -o %i -j NETMAP --to ${ALIAS_NET}   # site-gw:nm-out"
+    echo "PostUp   = ${I} -t nat -A PREROUTING -d ${ALIAS_NET} -i %i -j NETMAP --to ${LAN_NET}   # site-gw:nm-in"
+    echo "PostUp   = ${I} -t nat -A POSTROUTING -o ${LAN_IF} ! -s ${LAN_NET} -j MASQUERADE   # site-gw:snat-lan"
+    echo "PostUp   = ${I} -A FORWARD -i %i -j ACCEPT; ${I} -A FORWARD -o %i -j ACCEPT   # site-gw:fwd"
+    echo "PostUp   = ${I} -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu   # site-gw:mss"
+    echo "PostDown = ${I} -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu   # site-gw:mss"
+    echo "PostDown = ${I} -D FORWARD -i %i -j ACCEPT; ${I} -D FORWARD -o %i -j ACCEPT   # site-gw:fwd"
+    echo "PostDown = ${I} -t nat -D POSTROUTING -o ${LAN_IF} ! -s ${LAN_NET} -j MASQUERADE   # site-gw:snat-lan"
+    echo "PostDown = ${I} -t nat -D PREROUTING -d ${ALIAS_NET} -i %i -j NETMAP --to ${LAN_NET}   # site-gw:nm-in"
+    echo "PostDown = ${I} -t nat -D POSTROUTING -s ${LAN_NET} -o %i -j NETMAP --to ${ALIAS_NET}   # site-gw:nm-out"
+    echo ""
+  else
+    echo "PostUp   = iptables -t nat -A POSTROUTING -s ${LAN_NET} -o %i -j MASQUERADE   # site-gw:masq"
+    echo "PostUp   = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT   # site-gw:fwd"
+    echo "PostUp   = iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu   # site-gw:mss"
+    echo "PostDown = iptables -t mangle -D FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu   # site-gw:mss"
+    echo "PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT   # site-gw:fwd"
+    echo "PostDown = iptables -t nat -D POSTROUTING -s ${LAN_NET} -o %i -j MASQUERADE   # site-gw:masq"
+    echo ""
+  fi
+} > "$rules_file"
 
-# 收拢多余空行（重复执行时保持文件整洁）
+# 把规则插到 [Peer] 之前
+awk -v rf="$rules_file" '
+  /^\[Peer\]/ && !done { while ((getline l < rf) > 0) print l; close(rf); done=1 }
+  { print }
+' "$tmp_cfg" > "$tmp_cfg2"
+mv "$tmp_cfg2" "$tmp_cfg"
 cat -s "$tmp_cfg" > "$tmp_cfg3" && mv "$tmp_cfg3" "$tmp_cfg"
+
+if [[ ${ALIAS_MODE} -eq 1 ]]; then
+  log "已注入影子段规则（${LAN_NET} ↔ ${ALIAS_NET}，NAT 后端 ${NETMAP_IPT}）"
+else
+  log "已注入本站 NAT/转发/MSS 规则（${LAN_NET}）"
+fi
 
 if [[ ${DRY_RUN} -eq 1 ]]; then
   echo "  ---- 将写入 ${DST_CONF} 的内容（私钥已隐藏）----"
@@ -381,11 +524,9 @@ if [[ ${DRY_RUN} -eq 0 ]]; then
     echo "  1) wg-easy 面板 → 本客户端 →『服务端允许的IP』追加：${ALIAS_NET}"
     echo "     （注意填别名，不要填真实 LAN ${LAN_NET}）"
     echo "  2) wg-easy 面板 → 本客户端 →『允许的IP』追加：其它站点的别名网段（10.10.<站点号>.0/24）"
-    echo "     （172.16.0.0/12 已自动补上，用于 Docker/NPM 回程）"
-    echo "  3) 跨站访问用别名：本站 192.168.1.208 → 别站看到的地址是 10.10.<站点号>.208"
+    echo "  3) 跨站访问用别名：本站设备 192.168.1.208 → 别站看到的地址是 10.10.<站点号>.208"
     echo "  4) NPM 的 Forward Hostname 填别名地址（如 10.10.1.208）"
-    echo "  5) 仅当『站内设备要主动访问别站』时，主路由才需要加："
-    echo "     10.10.<别站号>.0/24 → 本站网关 LAN IP"
+    echo "  5) 仅当『站内设备要主动访问别站』时，主路由才需要加：10.10.<别站号>.0/24 → 本站网关 LAN IP"
     echo
     echo "  验证：conntrack -L | grep ${ALIAS_NET%/*}"
     echo "        tcpdump -ni ${LAN_IF} host <设备真实IP>   # 源地址应为本站网关 IP"

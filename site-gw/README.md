@@ -1,12 +1,32 @@
-# site-gw 安装执行流程（Armbian 旁路网关）
+# site-gw 安装执行流程（Debian / Ubuntu / Armbian / AlmaLinux …）
 
-把一台全新的 Armbian 小主机变成 **WireGuard 站点网关**：接上主路由后，该站点整个局域网就能与其它站点、以及你的手机/笔记本互通，用来替代 nps 内网穿透。
+把一台全新的 Linux 小主机变成 **WireGuard 站点网关**：接上主路由后，该站点整个局域网就能与其它站点、以及你的手机/笔记本互通，用来替代 nps 内网穿透。
 
 - 安装脚本：[`site-gw/install.sh`](./install.sh)
 - 影子段操作手册：[`site-gw/shadow-subnet-usage.md`](./shadow-subnet-usage.md)
 - 影子段设计说明：[`site-gw/shadow-subnet-plan.md`](./shadow-subnet-plan.md)
 - 设计目标：**零参数、可重复执行、不碰宿主机上的 Docker（npm / nps）**
-- 适用系统：Armbian（Debian/Ubuntu 系，内核自带 wireguard 模块）
+
+### 支持的系统
+
+| 发行版 | 包管理器 | 状态 | 备注 |
+|---|---|---|---|
+| Debian 12+ / Ubuntu 22.04+ | apt | ✅ | 内核自带 wireguard 模块 |
+| **Armbian**（Debian/Ubuntu 系） | apt | ✅ | 首选，内核自带模块 |
+| **AlmaLinux / RHEL / Rocky / CentOS Stream 8+** | dnf / yum | ✅ | 见下方注意事项 |
+| Arch / Manjaro | pacman | ✅ | |
+| openSUSE Leap / Tumbleweed | zypper | ✅ | |
+| OpenWrt | opkg | ❌ | 需改用 `opkg install wireguard-tools` 并手工处理 iptables |
+
+**EL 系（AlmaLinux/RHEL/Rocky）注意事项：**
+
+| 项 | 说明 |
+|---|---|
+| wireguard 模块 | EL9 内核自带；EL8 可能需 `dnf install -y epel-release elrepo-release && dnf install -y kmod-wireguard` |
+| `iptables` | 需显式安装：`dnf install -y iptables`（EL9 装的是 `iptables-nft`） |
+| **影子段（NETMAP）** | **`iptables-nft` 不支持 NETMAP 目标** → 脚本会提示装 `iptables-legacy` 或改用 nftables；普通模式不受影响 |
+| firewalld | 运行中时可能拦截转发，脚本会告警并给出放行命令 |
+| SELinux | `Enforcing` 时转发可能异常，脚本会告警 |
 
 ---
 
@@ -24,9 +44,9 @@
 | 8. 下线 nps | VPS 或小主机 | — | 观察 1~2 天后再做 |
 
 ```
-[站点A LAN 192.168.31.0/24]──Armbian(10.8.0.10)──┐
-                                                ├─ UDP 51820 ─→ VPS wg-easy (10.42.42.42)
-[站点B LAN 192.168.2.0/24]──Armbian(10.8.0.20)──┘                └─ 手机/笔记本 10.8.0.100
+[站点A LAN 192.168.31.0/24]──网关(10.8.0.10)──┐
+                                              ├─ UDP 51820 ─→ VPS wg-easy (10.42.42.42)
+[站点B LAN 192.168.2.0/24]──网关(10.8.0.20)──┘                └─ 手机/笔记本 10.8.0.100
 ```
 
 ---
@@ -119,8 +139,8 @@ sudo bash install.sh
 
 | 动作 | 说明 |
 |---|---|
-| 安装 `wireguard-tools`、`iptables` | 仅在缺失时安装；**不执行 `apt upgrade`、不动内核** |
-| 探测 LAN 网段 | 取默认路由网卡的网段，用于生成 NAT 规则 |
+| 识别系统并安装依赖 | `apt` / `dnf` / `yum` / `pacman` / `zypper` 自动选择；只装缺失的 `wireguard-tools`、`iptables`、`iproute`；**不执行系统升级、不动内核**；所有包管理命令带 `timeout 900` 防止卡死 |
+| 探测 LAN 网段 | 取默认路由网卡的网段，并归整成网络地址（`192.168.31.34/24` → `192.168.31.0/24`） |
 | 规范化配置 | 去 CRLF、删除 `DNS =` 行、`MTU 1420 → 1380` |
 | 注入转发规则 | 6 条 `PostUp/PostDown`（NAT / FORWARD / MSS clamp），带 `# site-gw:` 标记，重复执行不会重复注入 |
 | 安装隧道配置 | 写入 `/etc/wireguard/wg0.conf`（权限 600） |
@@ -241,6 +261,9 @@ cd /opt && docker compose start nps
 | 装完本机上网变慢/断 | 配置里混进了 `AllowedIPs = 0.0.0.0/0`（脚本默认拒绝，加了 `--force` 才会装） |
 | 重启后隧道没起来 | 缺 `network-online.target` 依赖（重跑脚本即可补上） |
 | 小主机拉不到脚本 | 先 `curl -sI https://wg.entitycloud.cn/dl/install.sh` 看是否 200；不行就临时换 `https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh` |
+| 在 AlmaLinux/RHEL 上跑到装依赖就停住 | 旧版脚本只会用 `apt-get`；当前版本已支持 `dnf`/`yum`。确认 `/dl/install.sh` 是最新（`curl -fsSL https://wg.entitycloud.cn/dl/install.sh \| grep -c "detect_pm"` 应为 1） |
+| AlmaLinux 上影子段报"netmap 不支持" | EL9 的 `iptables-nft` 不支持 NETMAP → `dnf install -y iptables-legacy` 后重跑，或按脚本打印的 nftables 方案手工配置，或改用普通模式（各站点 LAN 唯一） |
+| 脚本执行到一半报 `xxx: unbound variable` | 该版本的 bug（0.9 之前版本的 `${lanif}` 笔误）。重新下载最新脚本：`curl -fsSL https://wg.entitycloud.cn/dl/install.sh -o /opt/wireguard/install.sh` |
 
 ---
 
@@ -351,6 +374,7 @@ tcpdump -ni br-lan host 192.168.1.208 -c 5
 | `--lan=<CIDR>` | 指定本站 LAN 网段（多网卡探测不准时使用） |
 | `--mtu=<N>` | 覆盖 MTU（默认仅把 1420 降为 1380） |
 | `--force` | 允许 `AllowedIPs` 含 `0.0.0.0/0`（全流量走 VPN，慎用） |
+| `--skip-deps` | 跳过系统包安装（依赖已就绪 / 离线环境 / 不想让脚本动包管理器） |
 | `-h` / `--help` | 查看用法 |
 
 配置文件查找顺序：
