@@ -3,6 +3,8 @@
 把一台全新的 Armbian 小主机变成 **WireGuard 站点网关**：接上主路由后，该站点整个局域网就能与其它站点、以及你的手机/笔记本互通，用来替代 nps 内网穿透。
 
 - 安装脚本：[`site-gw/install.sh`](./install.sh)
+- 影子段操作手册：[`site-gw/shadow-subnet-usage.md`](./shadow-subnet-usage.md)
+- 影子段设计说明：[`site-gw/shadow-subnet-plan.md`](./shadow-subnet-plan.md)
 - 设计目标：**零参数、可重复执行、不碰宿主机上的 Docker（npm / nps）**
 - 适用系统：Armbian（Debian/Ubuntu 系，内核自带 wireguard 模块）
 
@@ -252,6 +254,9 @@ curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/ins
 ---
 
 ## 11. 影子段模式（多个站点 LAN 网段重名时）
+
+> 📘 **完整操作手册见 [shadow-subnet-usage.md](./shadow-subnet-usage.md)**（规划模板、逐站点清单、验证、排障、FAQ、台账）
+> 📐 **原理与设计见 [shadow-subnet-plan.md](./shadow-subnet-plan.md)**
 
 ### 11.1 什么时候需要
 
