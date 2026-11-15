@@ -4,7 +4,7 @@
 #
 #   用法：
 #     cd /opt/wireguard                      # 把 wg-easy 导出的配置 scp 到这个目录
-#     curl -fsSL https://raw.githubusercontent.com/thatinjury2011/wg-easy/master/site-gw/install.sh | sudo bash
+#     curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash
 #
 #   脚本做的事：装依赖 → 把配置装成 wg0 常驻隧道 → 开机自启 → 留一份副本供重跑
 #   不触碰：Docker 容器/网络/iptables 链、FORWARD 默认策略、主机路由、nps、npm
@@ -40,9 +40,9 @@ die()  { printf '\033[1;31m[site-gw]\033[0m %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'HELP'
 site-gw 零参数安装：
-  curl -fsSL https://raw.githubusercontent.com/thatinjury2011/wg-easy/master/site-gw/install.sh | sudo bash
+  curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash
 影子段模式（多个站点 LAN 网段重名时）：
-  curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24
+  curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.1.0/24
 配置文件查找顺序：当前目录唯一的 *.conf → ./1.conf → ./wg0.conf → /opt/wireguard/1.conf → /opt/wireguard/*.conf（唯一时）
 可选：--alias=<CIDR> | --dry-run | --rollback | --conf=<路径> | --lan=192.168.31.0/24 | --mtu=1380 | --force
 HELP
@@ -62,7 +62,7 @@ for a in "$@"; do
   esac
 done
 
-[[ ${EUID} -eq 0 ]] || die "请用 root 运行：curl -fsSL https://raw.githubusercontent.com/thatinjury2011/wg-easy/master/site-gw/install.sh | sudo bash"
+[[ ${EUID} -eq 0 ]] || die "请用 root 运行：curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash"
 
 run() {
   if [[ ${DRY_RUN} -eq 1 ]]; then printf '  [dry-run] %s\n' "$*"; else "$@"; fi
@@ -163,7 +163,7 @@ else
 先把 wg-easy 面板导出的配置 scp 过来，再在同一个目录里执行：
 
   scp 1.conf root@<这台设备>:/opt/wireguard/1.conf
-  cd /opt/wireguard && curl -fsSL https://raw.githubusercontent.com/thatinjury2011/wg-easy/master/site-gw/install.sh | sudo bash
+  cd /opt/wireguard && curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash
 
 如果目录里有多个 .conf 无法自动选择，用 --conf=<路径> 指定。
 MSG
@@ -391,5 +391,5 @@ if [[ ${DRY_RUN} -eq 0 ]]; then
     echo "        tcpdump -ni ${LAN_IF} host <设备真实IP>   # 源地址应为本站网关 IP"
   fi
   echo
-  log "回滚：curl -fsSL https://raw.githubusercontent.com/thatinjury2011/wg-easy/master/site-gw/install.sh | sudo bash -s -- --rollback"
+  log "回滚：curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --rollback"
 fi

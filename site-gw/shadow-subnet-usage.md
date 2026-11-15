@@ -80,11 +80,11 @@ scp 1.conf root@192.168.1.10:/opt/wireguard/1.conf
 
 # 2) 空跑（强烈建议，确认渲染结果）
 cd /opt/wireguard
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh \
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh \
   | sudo bash -s -- --alias=10.10.1.0/24 --dry-run
 
 # 3) 正式安装
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh \
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh \
   | sudo bash -s -- --alias=10.10.1.0/24
 ```
 
@@ -301,7 +301,7 @@ docker exec wg-easy iptables -t nat -D POSTROUTING -o wg0 -s 172.16.0.0/12 \
 
 ```bash
 scp 1.conf root@192.168.1.10:/opt/wireguard/1.conf
-ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.4.0/24'
+ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.4.0/24'
 ```
 
 ---
@@ -312,7 +312,7 @@ ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/
 |---|---|
 | 影子模式 → 普通模式（站点 LAN 已唯一化后） | 重跑同一脚本，**不带** `--alias`（旧规则自动清除） |
 | 修改别名段 | 直接带新的 `--alias=...` 重跑（会重建规则），并同步面板字段与台账 |
-| 完全卸载 | `curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh \| sudo bash -s -- --rollback` |
+| 完全卸载 | `curl -fsSL https://wg.entitycloud.cn/dl/install.sh \| sudo bash -s -- --rollback` |
 | 只停隧道不停 Docker | `systemctl stop wg-quick@wg0` |
 
 > 切换模式后务必回面板核对「服务端允许的IP」：普通模式填真实 LAN，影子模式填别名段。
@@ -381,7 +381,7 @@ ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/
 脚本地址固定为：
 
 ```
-https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh
+https://wg.entitycloud.cn/dl/install.sh
 ```
 
 ### 12.1 站点 1 网关（真实 `192.168.1.0/24`，别名 `10.10.1.0/24`）
@@ -391,32 +391,32 @@ https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh
 scp 1.conf root@192.168.1.10:/opt/wireguard/1.conf
 
 # 空跑
-ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --dry-run'
+ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --dry-run'
 
 # 正式安装
-ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24'
+ssh root@192.168.1.10 'cd /opt/wireguard && curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.1.0/24'
 ```
 
 在网关本机上直接执行（已在 `/opt/wireguard` 目录）：
 
 ```bash
 cd /opt/wireguard
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --dry-run
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --dry-run
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.1.0/24
 ```
 
 ### 12.2 站点 2 网关（别名 `10.10.2.0/24`）
 
 ```bash
 scp 1.conf root@192.168.2.10:/opt/wireguard/1.conf
-ssh root@192.168.2.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.2.0/24'
+ssh root@192.168.2.10 'cd /opt/wireguard && curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.2.0/24'
 ```
 
 ### 12.3 站点 3 网关（别名 `10.10.3.0/24`）
 
 ```bash
 scp 1.conf root@192.168.3.10:/opt/wireguard/1.conf
-ssh root@192.168.3.10 'cd /opt/wireguard && curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.3.0/24'
+ssh root@192.168.3.10 'cd /opt/wireguard && curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.3.0/24'
 ```
 
 ### 12.4 网关侧验证（在网关本机）
@@ -466,18 +466,18 @@ curl.exe -I --max-time 5 http://10.10.1.208:5000
 
 ```bash
 cd /opt/wireguard
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash
 ```
 
 ### 12.9 完全卸载
 
 ```bash
 cd /opt/wireguard
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --rollback
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --rollback
 ```
 
 ### 12.10 指定 LAN 网段 / MTU（多网卡探测不准时）
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --lan=192.168.1.0/24 --mtu=1380
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --lan=192.168.1.0/24 --mtu=1380
 ```

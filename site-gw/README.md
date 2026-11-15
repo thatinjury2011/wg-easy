@@ -73,23 +73,26 @@ scp .\1.conf root@192.168.31.10:/opt/wireguard/1.conf
 
 ## 3. 下载脚本并空跑校验
 
-脚本有三个来源，任选一个：
+脚本地址（**默认用你自己的域名**）：
 
-| 来源 | 地址 | 适用 |
+```
+https://wg.entitycloud.cn/dl/install.sh
+```
+
+| 来源 | 地址 | 说明 |
 |---|---|---|
-| **自建域名（长期推荐）** | `https://wg.entitycloud.cn/dl/install.sh` | 国内网络最稳，需先按「附录 D」配置 |
-| **jsDelivr CDN** | `https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh` | 过渡期可直接用 |
-| GitHub raw | `https://raw.githubusercontent.com/thatinjury2011/wg-easy/master/site-gw/install.sh` | 部分网络会被 reset |
+| **自有域名（默认）** | `https://wg.entitycloud.cn/dl/install.sh` | 国内直连最稳，不依赖 GitHub；首次需按「附录 D」配置一次 |
+| jsDelivr（备用） | `https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh` | 自有域名异常时临时用 |
+| GitHub raw（备用） | `https://raw.githubusercontent.com/thatinjury2011/wg-easy/master/site-gw/install.sh` | 部分网络会被 reset |
 
 ```bash
 cd /opt/wireguard
 
 # 3.1 下载到本地（方便审阅、留档）
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh -o install.sh
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh -o install.sh
 
 # 3.2 校验完整性（可选但推荐）
 sha256sum install.sh
-#   期望：1a2987221f2973a5bd4ccb8b02c906157096e1e973c984705ef25c7687f714d0
 
 # 3.3 语法检查（无输出即通过）
 bash -n install.sh
@@ -106,7 +109,7 @@ sudo bash install.sh --dry-run
 
 ```bash
 # 直接用云端脚本（配置已在该目录）
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash
 
 # 或者用已下载到本地的脚本
 sudo bash install.sh
@@ -237,14 +240,14 @@ cd /opt && docker compose start nps
 | 网页能开但大文件卡死 | MTU/MSS：确认配置是 `MTU = 1380` 且注入了 `TCPMSS --clamp-mss-to-pmtu` |
 | 装完本机上网变慢/断 | 配置里混进了 `AllowedIPs = 0.0.0.0/0`（脚本默认拒绝，加了 `--force` 才会装） |
 | 重启后隧道没起来 | 缺 `network-online.target` 依赖（重跑脚本即可补上） |
-| 小主机拉不到脚本 | 换 jsDelivr 地址，或按附录 D 挂到自己域名 |
+| 小主机拉不到脚本 | 先 `curl -sI https://wg.entitycloud.cn/dl/install.sh` 看是否 200；不行就临时换 `https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh` |
 
 ---
 
 ## 10. 回滚
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --rollback
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --rollback
 ```
 
 会停用并移除 `wg-quick@wg0`、`/etc/wireguard/wg0.conf`、systemd drop-in、配置哈希文件。
@@ -288,10 +291,10 @@ scp 1.conf root@192.168.1.10:/opt/wireguard/1.conf
 
 # 2) 进目录，先空跑（只打印，不改任何文件）
 cd /opt/wireguard
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --dry-run
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.1.0/24 --dry-run
 
 # 3) 正式安装（站点 A 用 10.10.1.0/24，站点 B 用 10.10.2.0/24，依此类推）
-curl -fsSL https://cdn.jsdelivr.net/gh/thatinjury2011/wg-easy@master/site-gw/install.sh | sudo bash -s -- --alias=10.10.1.0/24
+curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --alias=10.10.1.0/24
 ```
 
 脚本自动完成：
@@ -400,9 +403,11 @@ tcpdump -ni br-lan host 192.168.1.208 -c 5
 
 ---
 
-## 附录 D：把脚本挂到自己的域名（可选）
+## 附录 D：把脚本挂到自己的域名（已完成，附维护方法）
 
-把脚本放到 VPS 上由 NPM 静态分发，避免依赖 GitHub 连通性。
+默认地址：**`https://wg.entitycloud.cn/dl/install.sh`**
+
+### D.1 首次配置（已做过可跳过）
 
 ```bash
 # VPS 上
@@ -424,11 +429,24 @@ location = /dl/install.sh {
 }
 ```
 
-验证并改用该地址：
+验证：
 
 ```bash
 curl -sI https://wg.entitycloud.cn/dl/install.sh | head -3   # 期望 200 + text/plain
-curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash
 ```
 
-更新脚本时只需重新 `cp` 一次，无需重启容器。
+### D.2 以后更新脚本（每次改完都要做）
+
+```bash
+# 1) 在本地仓库改完并推送
+git add site-gw/install.sh && git commit -m "chore(site-gw): ..." && git push
+
+# 2) 上传到 VPS（这一步不能省，否则 /dl/ 上还是旧版本）
+scp D:/wg-easy/site-gw/install.sh root@123.207.244.93:/opt/npm/data/dl/install.sh
+
+# 3) 核对线上版本
+ssh root@123.207.244.93 'curl -sI https://wg.entitycloud.cn/dl/install.sh | head -1; ls -l /opt/npm/data/dl/install.sh'
+```
+
+> 静态文件没有缓存问题（`Cache-Control: no-cache`），**不用重启容器**，`cp` 完立即生效。
+> 唯一要注意的是：**git push 只更新 GitHub，不会自动更新 `/dl/`** —— 两边是独立的。
