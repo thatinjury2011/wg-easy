@@ -520,16 +520,22 @@ if [[ ${DRY_RUN} -eq 0 ]]; then
 
   if [[ ${ALIAS_MODE} -eq 1 ]]; then
     echo
-    log "---- 影子段模式：还需要你在面板/路由上做这些 ----"
+    log "---- 影子段模式：还需要你在面板上做这些 ----"
     echo "  1) wg-easy 面板 → 本客户端 →『服务端允许的IP』追加：${ALIAS_NET}"
     echo "     （注意填别名，不要填真实 LAN ${LAN_NET}）"
-    echo "  2) wg-easy 面板 → 本客户端 →『允许的IP』追加：其它站点的别名网段（10.10.<站点号>.0/24）"
-    echo "  3) 跨站访问用别名：本站设备 192.168.1.208 → 别站看到的地址是 10.10.<站点号>.208"
-    echo "  4) NPM 的 Forward Hostname 填别名地址（如 10.10.1.208）"
-    echo "  5) 仅当『站内设备要主动访问别站』时，主路由才需要加：10.10.<别站号>.0/24 → 本站网关 LAN IP"
+    echo "  2) wg-easy 面板 →『钩子脚本 → 启动后脚本(PostUp)』加一条："
+    echo "       ip route replace ${ALIAS_NET} dev {{interface}}"
+    echo "     ⚠️ 必须加：wg-easy 只写 allowed-ips，不会自动给容器加内核路由；"
+    echo "        少了它表现为『握手正常、sent 远大于 received、ping 全超时』"
+    echo "     （多站点可用 ip route replace 10.10.0.0/16 dev {{interface}} 一条覆盖）"
+    echo "  3) wg-easy 面板 → 本客户端 →『允许的IP』追加：其它站点的别名网段"
+    echo "  4) 跨站访问用别名：本站设备 192.168.1.208 → 别站看到的地址是 10.10.<站点号>.208"
+    echo "  5) NPM 的 Forward Hostname 填别名地址（如 10.10.1.208）"
+    echo "  6) 仅当『站内设备要主动访问别站』时，主路由才需要加：10.10.<别站号>.0/24 → 本站网关 LAN IP"
     echo
-    echo "  验证：conntrack -L | grep ${ALIAS_NET%/*}"
-    echo "        tcpdump -ni ${LAN_IF} host <设备真实IP>   # 源地址应为本站网关 IP"
+    echo "  验证：docker exec wg-easy ip route | grep 10.10        # 在 VPS 上"
+    echo "        conntrack -L | grep ${ALIAS_NET%/*}              # 在本机"
+    echo "        tcpdump -ni ${LAN_IF} host <设备真实IP>           # 源地址应为本站网关 IP"
   fi
   echo
   log "回滚：curl -fsSL https://wg.entitycloud.cn/dl/install.sh | sudo bash -s -- --rollback"
